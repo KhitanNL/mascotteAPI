@@ -1,0 +1,11 @@
+# Speech-to-text for the dialogue modalities (2.5, 2.6). Installed by
+# scripts/setup-dialogue.sh into face-stt/venv; the service is face-stt/app.py,
+# launched by face-stt/run.sh on 127.0.0.1:7010.
+faster-whisper>=1.1,<2
+# CTranslate2 needs cuBLAS 12 and cuDNN 9 at runtime; these wheels provide them.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9,<10
+fastapi>=0.110
+uvicorn>=0.29
+# In-memory decoding of webm/opus and iOS mp4/aac.
+av>=12
