@@ -19,7 +19,9 @@ FACE = os.environ.get("SMOKE_FACE", "/home/khitan/age-progression-app/client/pub
 
 
 def call(method, path, body=None, ctype=None, timeout=300):
-    req = urllib.request.Request(URL + path, data=body, method=method, headers={"Authorization": f"Bearer {TOKEN}"})
+    # Cloudflare's Browser Integrity Check refuses Python's default User-Agent (error 1010).
+    req = urllib.request.Request(URL + path, data=body, method=method,
+                                 headers={"Authorization": f"Bearer {TOKEN}", "User-Agent": "mascotte-smoke/1.0"})
     if ctype:
         req.add_header("Content-Type", ctype)
     try:

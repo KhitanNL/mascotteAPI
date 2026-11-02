@@ -9,6 +9,8 @@ Wants=network-online.target
 [Service]
 User=khitan
 WorkingDirectory=/home/khitan/mascotteAPI
+# WSL keeps nvidia-smi in /usr/lib/wsl/lib, outside systemd's default PATH.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib
 ExecStart=/home/khitan/mascotteAPI/scripts/run-local.sh
 Restart=always
 RestartSec=5
