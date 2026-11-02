@@ -11,7 +11,10 @@ another worker and adding its URL to the web app's list.
 
     GET    /ping                                   no token; {ok}
     GET    /v1/status                              engines up, call slots, GPU
+    GET    /v1/faces                               sample portraits: {faces: [{id, url}]}
+    GET    /v1/faces/{id}                          one sample portrait (JPEG/PNG)
     POST   /v1/sessions?steps&seed&crop&idle_chunks  body: face image -> {id, idle, poster, ...}
+    POST   /v1/sessions?face={id}                  the same with a sample portrait, no body
                                                    503 {"error": "full"} when no slot is free
     POST   /v1/sessions/{id}/clips?turn&seq        body: WAV -> video/mp4 (+ X-* timings)
     POST   /v1/sessions/{id}/cancel?turn
@@ -41,6 +44,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -59,6 +63,8 @@ class Config:
     # The face engine drops a session after 10 idle minutes; forget ours a bit later.
     session_idle_sec: int = 11 * 60
     worker_name: str = "worker"
+    # Sample portraits offered to users (not in git: rights stay with their owner).
+    faces_dir: str = str(Path(__file__).resolve().parents[2] / "faces")
 
     @staticmethod
     def from_env() -> "Config":
@@ -75,6 +81,7 @@ class Config:
             gpu_calls=gpu_calls,
             max_slots=min(gpu_calls, int(os.environ.get("MAX_SLOTS", str(gpu_calls)))),
             worker_name=os.environ.get("WORKER_NAME", os.uname().nodename),
+            faces_dir=os.environ.get("FACES_DIR", Config.faces_dir),
         )
 
 
@@ -156,9 +163,36 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
             "gpu": _gpu_name(),
         }
 
+    def sample_faces() -> dict[str, Path]:
+        d = Path(cfg.faces_dir)
+        if not d.is_dir():
+            return {}
+        return {p.stem: p for p in sorted(d.iterdir()) if p.suffix.lower() in (".jpg", ".jpeg", ".png")}
+
+    @app.get("/v1/faces", dependencies=[Depends(auth)])
+    async def list_faces():
+        return {"faces": [{"id": k, "url": f"/v1/faces/{k}"} for k in sample_faces()]}
+
+    @app.get("/v1/faces/{face_id}", dependencies=[Depends(auth)])
+    async def get_face(face_id: str):
+        p = sample_faces().get(face_id)
+        if not p:
+            raise HTTPException(404, "no such face")
+        return Response(content=p.read_bytes(), media_type="image/png" if p.suffix.lower() == ".png" else "image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
     @app.post("/v1/sessions", dependencies=[Depends(auth)])
     async def open_session(request: Request):
-        body = await request.body()
+        params = dict(request.query_params)
+        sample = params.pop("face", None)
+        if sample:
+            # A sample face by id instead of an upload.
+            p = sample_faces().get(sample)
+            if not p:
+                raise HTTPException(404, "no such face")
+            body, ctype = p.read_bytes(), "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
+        else:
+            body, ctype = await request.body(), request.headers.get("content-type", "application/octet-stream")
         if not body:
             raise HTTPException(400, "face image missing")
         # One at a time, so two calls cannot both take the last slot.
@@ -170,8 +204,8 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
             if len(slots.last_used) >= cfg.max_slots or engine >= cfg.gpu_calls:
                 return JSONResponse({"error": "full", "mine": len(slots.last_used), "engineSessions": engine},
                                     status_code=503)
-            r = await client.post(f"{cfg.avatar_url}/sessions", params=dict(request.query_params), content=body,
-                                  headers={"content-type": request.headers.get("content-type", "application/octet-stream")})
+            r = await client.post(f"{cfg.avatar_url}/sessions", params=params, content=body,
+                                  headers={"content-type": ctype})
             if r.status_code == 200:
                 sid = r.json().get("id")
                 if sid:

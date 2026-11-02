@@ -122,6 +122,19 @@ def test_transcribe_and_chat():
     assert c.post("/v1/chat", json={"nope": 1}, headers=AUTH).status_code == 400
 
 
+def test_sample_faces(tmp_path):
+    (tmp_path / "1.jpg").write_bytes(b"\xff\xd8one")
+    (tmp_path / "notes.txt").write_text("not a face")
+    c = client(FakeEngines(), faces_dir=str(tmp_path))
+    assert c.get("/v1/faces").status_code == 401
+    assert c.get("/v1/faces", headers=AUTH).json() == {"faces": [{"id": "1", "url": "/v1/faces/1"}]}
+    r = c.get("/v1/faces/1", headers=AUTH)
+    assert r.content == b"\xff\xd8one" and r.headers["content-type"] == "image/jpeg"
+    assert c.get("/v1/faces/notes", headers=AUTH).status_code == 404
+    assert c.post("/v1/sessions?face=1", headers=AUTH).json()["id"] == "s1"
+    assert c.post("/v1/sessions?face=nope", headers=AUTH).status_code == 404
+
+
 def test_refuses_to_start_without_a_strong_token(monkeypatch):
     monkeypatch.setenv("WORKER_TOKEN", "short")
     with pytest.raises(SystemExit):
