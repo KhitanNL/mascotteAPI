@@ -7,8 +7,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="$ROOT/.venv"
+# Install only when the requirements changed, so a restart works without internet.
+REQ="$ROOT/worker/gateway/requirements.txt"
 [ -x "$VENV/bin/python" ] || python3 -m venv "$VENV"
-"$VENV/bin/pip" install -q -r "$ROOT/worker/gateway/requirements.txt"
+if [ ! -f "$VENV/.req" ] || ! cmp -s "$REQ" "$VENV/.req"; then
+  "$VENV/bin/pip" install -q -r "$REQ" && cp "$REQ" "$VENV/.req"
+fi
 
 if [ "${1:-}" = "test" ]; then
   cd "$ROOT/worker/gateway" && exec "$VENV/bin/python" -m pytest -q

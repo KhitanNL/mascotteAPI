@@ -1,0 +1,8 @@
+# Cloudflare Tunnel: face.mascotte.ai -> this machine's worker gateway.
+# Filled in by deploy/setup-tunnel.sh (TUNNEL_ID); installed as /etc/cloudflared/mascotte.yml.
+tunnel: TUNNEL_ID
+credentials-file: /home/khitan/.cloudflared/TUNNEL_ID.json
+ingress:
+  - hostname: face.mascotte.ai
+    service: http://127.0.0.1:7100
+  - service: http_status:404
