@@ -135,6 +135,44 @@ def test_sample_faces(tmp_path):
     assert c.post("/v1/sessions?face=nope", headers=AUTH).status_code == 404
 
 
+class RecordingEngines(FakeEngines):
+    def __init__(self):
+        super().__init__()
+        self.opened_with: list[dict] = []
+
+    def handler(self, req: httpx.Request) -> httpx.Response:
+        if req.url.host == "avatar" and req.url.path == "/sessions":
+            self.opened_with.append(dict(req.url.params))
+        return super().handler(req)
+
+
+def test_settings_are_listed():
+    s = client(FakeEngines()).get("/v1/settings", headers=AUTH).json()["settings"]
+    assert set(s) == {"quality", "variant", "autoFrame", "idleLoop"}
+    assert s["quality"]["default"] == "best" and s["idleLoop"]["max"] == 6
+
+
+def test_settings_map_to_the_engine():
+    e = RecordingEngines()
+    c = client(e)
+    r = c.post("/v1/sessions?quality=fast&variant=7&autoFrame=false&idleLoop=5", content=b"jpg", headers=AUTH).json()
+    assert r["settings"] == {"quality": "fast", "variant": 7, "autoFrame": False, "idleLoop": 5}
+    assert e.opened_with[-1] == {"steps": "2", "seed": "7", "crop": "0", "idle_chunks": "5"}
+    # Defaults, and the engine's own names still work (mascotte.ai sends steps=4).
+    assert c.post("/v1/sessions?steps=4", content=b"jpg", headers=AUTH).json()["settings"] == \
+        {"quality": "best", "variant": 42, "autoFrame": True, "idleLoop": 3}
+    assert e.opened_with[-1] == {"steps": "4", "seed": "42", "crop": "1", "idle_chunks": "3"}
+
+
+def test_bad_settings_are_refused_before_the_gpu():
+    e = RecordingEngines()
+    c = client(e)
+    for q in ("quality=ultra", "steps=3", "variant=-1", "variant=abc", "autoFrame=maybe", "idleLoop=0", "idleLoop=9"):
+        r = c.post(f"/v1/sessions?{q}", content=b"jpg", headers=AUTH)
+        assert r.status_code == 400 and r.json()["error"] == "bad_setting", q
+    assert e.opened_with == []
+
+
 def test_refuses_to_start_without_a_strong_token(monkeypatch):
     monkeypatch.setenv("WORKER_TOKEN", "short")
     with pytest.raises(SystemExit):

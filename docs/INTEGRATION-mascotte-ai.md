@@ -24,6 +24,26 @@ FACE_WORKER_TOKEN=<the worker's token, server side only>
 | `POST /v1/sessions/{id}/cancel?turn=T` | none | stops rendering an interrupted reply |
 | `DELETE /v1/sessions/{id}` | none | ends the call, frees the slot |
 
+### Face settings
+
+`GET /v1/settings` lists them with types, ranges and defaults, so the UI can be
+built from it. Pass any of them as query parameters when opening a face; the
+answer echoes the values used under `settings`. A bad value is refused with
+`400 {"error":"bad_setting","message":...}` before anything touches the GPU.
+
+| Setting | Values | Default | Effect |
+|---|---|---|---|
+| `quality` | `best`, `fast` | `best` | fast renders about twice as fast with a slightly softer face |
+| `variant` | whole number | 42 | a different variant of the head's movement style |
+| `autoFrame` | `true`, `false` | `true` | find and frame the face; off only for tight, centred portraits |
+| `idleLoop` | 1–6 | 3 | length of the rest loop between replies (× 1.32 s) |
+
+Example: `POST /v1/sessions?face=3&quality=fast&idleLoop=5`. The engine's own
+names (`steps=4|2`, `seed`, `crop=1|0`, `idle_chunks`) still work.
+
+Sample faces: `GET /v1/faces` → `{faces:[{id,url}]}`, `GET /v1/faces/{id}` → the
+image, `POST /v1/sessions?face={id}` opens one without uploading.
+
 `turn` counts replies in the call (1, 2, 3 …), `seq` counts lines within a reply
 (0, 1, 2 …). A clip continues the head's motion from the previous clip of the
 same turn; a new turn starts from the rest pose, so it blends with the idle loop.

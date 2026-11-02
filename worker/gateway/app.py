@@ -13,8 +13,9 @@ another worker and adding its URL to the web app's list.
     GET    /v1/status                              engines up, call slots, GPU
     GET    /v1/faces                               sample portraits: {faces: [{id, url}]}
     GET    /v1/faces/{id}                          one sample portrait (JPEG/PNG)
-    POST   /v1/sessions?steps&seed&crop&idle_chunks  body: face image -> {id, idle, poster, ...}
-    POST   /v1/sessions?face={id}                  the same with a sample portrait, no body
+    GET    /v1/settings                            the face settings, with types, ranges and defaults
+    POST   /v1/sessions?quality&variant&autoFrame&idleLoop  body: face image -> {id, idle, poster, settings, ...}
+    POST   /v1/sessions?face={id}&...              the same with a sample portrait, no body
                                                    503 {"error": "full"} when no slot is free
     POST   /v1/sessions/{id}/clips?turn&seq        body: WAV -> video/mp4 (+ X-* timings)
     POST   /v1/sessions/{id}/cancel?turn
@@ -101,6 +102,73 @@ class Slots:
             self.last_used.pop(sid, None)
 
 
+# Face settings a caller may choose when opening a face. GET /v1/settings returns
+# this, so a client can build its controls from it. Each maps to a FlashHead
+# engine parameter; the engine's own names are accepted too (steps, seed, crop,
+# idle_chunks).
+SECONDS_PER_IDLE_CHUNK = 1.32  # 33 frames at 25 fps
+SETTINGS = {
+    "quality": {
+        "type": "choice", "options": ["best", "fast"], "default": "best",
+        "description": "best: 4 render steps. fast: 2 steps, about twice as fast, slightly softer face.",
+    },
+    "variant": {
+        "type": "integer", "min": 0, "max": 2_147_483_647, "default": 42,
+        "description": "Picks a variant of the head's movement style for the same face.",
+    },
+    "autoFrame": {
+        "type": "boolean", "default": True,
+        "description": "Find and frame the face in the photo. Turn off only for a tight, centred portrait.",
+    },
+    "idleLoop": {
+        "type": "integer", "min": 1, "max": 6, "default": 3, "unit": f"× {SECONDS_PER_IDLE_CHUNK} s",
+        "description": "Length of the silent rest loop between replies. Longer looks less repetitive, opens a little slower.",
+    },
+}
+
+
+class SettingsError(ValueError):
+    pass
+
+
+def resolve_settings(params: dict[str, str]) -> tuple[dict, dict[str, str]]:
+    """Query parameters -> (the effective settings, the engine's parameters). Raises SettingsError."""
+    def pick(name: str, engine_name: str) -> str | None:
+        return params.get(name, params.get(engine_name))
+
+    out = {k: v["default"] for k, v in SETTINGS.items()}
+    q = pick("quality", "steps")
+    if q is not None:
+        if q in ("best", "4"):
+            out["quality"] = "best"
+        elif q in ("fast", "2"):
+            out["quality"] = "fast"
+        else:
+            raise SettingsError("quality must be best or fast (steps 4 or 2)")
+    v = pick("variant", "seed")
+    if v is not None:
+        if not v.isdigit() or int(v) > SETTINGS["variant"]["max"]:
+            raise SettingsError("variant must be a whole number from 0")
+        out["variant"] = int(v)
+    a = pick("autoFrame", "crop")
+    if a is not None:
+        if a.lower() not in ("1", "0", "true", "false"):
+            raise SettingsError("autoFrame must be true or false")
+        out["autoFrame"] = a.lower() in ("1", "true")
+    i = pick("idleLoop", "idle_chunks")
+    if i is not None:
+        if not i.isdigit() or not 1 <= int(i) <= 6:
+            raise SettingsError("idleLoop must be 1 to 6")
+        out["idleLoop"] = int(i)
+    engine = {
+        "steps": "4" if out["quality"] == "best" else "2",
+        "seed": str(out["variant"]),
+        "crop": "1" if out["autoFrame"] else "0",
+        "idle_chunks": str(out["idleLoop"]),
+    }
+    return out, engine
+
+
 def _gpu_name() -> str | None:
     if not shutil.which("nvidia-smi"):
         return None
@@ -181,10 +249,18 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
         return Response(content=p.read_bytes(), media_type="image/png" if p.suffix.lower() == ".png" else "image/jpeg",
                         headers={"Cache-Control": "public, max-age=86400"})
 
+    @app.get("/v1/settings", dependencies=[Depends(auth)])
+    async def settings():
+        return {"settings": SETTINGS}
+
     @app.post("/v1/sessions", dependencies=[Depends(auth)])
     async def open_session(request: Request):
-        params = dict(request.query_params)
-        sample = params.pop("face", None)
+        query = dict(request.query_params)
+        sample = query.pop("face", None)
+        try:
+            chosen, params = resolve_settings(query)
+        except SettingsError as exc:
+            return JSONResponse({"error": "bad_setting", "message": str(exc)}, status_code=400)
         if sample:
             # A sample face by id instead of an upload.
             p = sample_faces().get(sample)
@@ -207,9 +283,11 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
             r = await client.post(f"{cfg.avatar_url}/sessions", params=params, content=body,
                                   headers={"content-type": ctype})
             if r.status_code == 200:
-                sid = r.json().get("id")
+                opened = r.json()
+                sid = opened.get("id")
                 if sid:
                     slots.last_used[sid] = time.monotonic()
+                return JSONResponse({**opened, "settings": chosen})
         return passthrough(r, "application/json")
 
     @app.post("/v1/sessions/{sid}/clips", dependencies=[Depends(auth)])
