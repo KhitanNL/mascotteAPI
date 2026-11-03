@@ -37,9 +37,11 @@ answer echoes the values used under `settings`. A bad value is refused with
 | `variant` | whole number | 42 | a different variant of the head's movement style |
 | `autoFrame` | `true`, `false` | `true` | find and frame the face; off only for tight, centred portraits |
 | `idleLoop` | 1–6 | 3 | length of the rest loop between replies (× 1.32 s) |
+| `resolution` | `512`, `640`, `768`, `1024` | 512 | square video size in px; 512 is the model's native size. GPU time grows with the pixels (640 ≈ 1.6×, 768 ≈ 2.25×, 1024 ≈ 4×, experimental), so larger sizes render slower and fewer calls fit at once |
 
-Example: `POST /v1/sessions?face=3&quality=fast&idleLoop=5`. The engine's own
-names (`steps=4|2`, `seed`, `crop=1|0`, `idle_chunks`) still work.
+Example: `POST /v1/sessions?face=3&quality=fast&idleLoop=5&resolution=768`. The
+engine's own names (`steps=4|2`, `seed`, `crop=1|0`, `idle_chunks`, `size`)
+still work.
 
 Sample faces: `GET /v1/faces` → `{faces:[{id,url}]}`, `GET /v1/faces/{id}` → the
 image, `POST /v1/sessions?face={id}` opens one without uploading.

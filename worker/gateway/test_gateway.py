@@ -148,7 +148,8 @@ class RecordingEngines(FakeEngines):
 
 def test_settings_are_listed():
     s = client(FakeEngines()).get("/v1/settings", headers=AUTH).json()["settings"]
-    assert set(s) == {"quality", "variant", "autoFrame", "idleLoop"}
+    assert set(s) == {"quality", "variant", "autoFrame", "idleLoop", "resolution"}
+    assert s["resolution"]["options"] == [512, 640, 768, 1024] and s["resolution"]["default"] == 512
     assert s["quality"]["default"] == "best" and s["idleLoop"]["max"] == 6
 
 
@@ -156,18 +157,30 @@ def test_settings_map_to_the_engine():
     e = RecordingEngines()
     c = client(e)
     r = c.post("/v1/sessions?quality=fast&variant=7&autoFrame=false&idleLoop=5", content=b"jpg", headers=AUTH).json()
-    assert r["settings"] == {"quality": "fast", "variant": 7, "autoFrame": False, "idleLoop": 5}
+    assert r["settings"] == {"quality": "fast", "variant": 7, "autoFrame": False, "idleLoop": 5, "resolution": 512}
     assert e.opened_with[-1] == {"steps": "2", "seed": "7", "crop": "0", "idle_chunks": "5"}
     # Defaults, and the engine's own names still work (mascotte.ai sends steps=4).
     assert c.post("/v1/sessions?steps=4", content=b"jpg", headers=AUTH).json()["settings"] == \
-        {"quality": "best", "variant": 42, "autoFrame": True, "idleLoop": 3}
+        {"quality": "best", "variant": 42, "autoFrame": True, "idleLoop": 3, "resolution": 512}
     assert e.opened_with[-1] == {"steps": "4", "seed": "42", "crop": "1", "idle_chunks": "3"}
+
+
+def test_resolution_is_sent_only_when_chosen():
+    e = RecordingEngines()
+    c = client(e)
+    for res in (640, 768, 1024):
+        r = c.post(f"/v1/sessions?resolution={res}", content=b"jpg", headers=AUTH).json()
+        assert r["settings"]["resolution"] == res and e.opened_with[-1]["size"] == str(res)
+    assert c.post("/v1/sessions?size=768", content=b"jpg", headers=AUTH).json()["settings"]["resolution"] == 768
+    c.post("/v1/sessions?resolution=512", content=b"jpg", headers=AUTH)
+    assert "size" not in e.opened_with[-1]
 
 
 def test_bad_settings_are_refused_before_the_gpu():
     e = RecordingEngines()
     c = client(e)
-    for q in ("quality=ultra", "steps=3", "variant=-1", "variant=abc", "autoFrame=maybe", "idleLoop=0", "idleLoop=9"):
+    for q in ("quality=ultra", "steps=3", "variant=-1", "variant=abc", "autoFrame=maybe", "idleLoop=0", "idleLoop=9",
+              "resolution=500", "resolution=2048", "size=big"):
         r = c.post(f"/v1/sessions?{q}", content=b"jpg", headers=AUTH)
         assert r.status_code == 400 and r.json()["error"] == "bad_setting", q
     assert e.opened_with == []

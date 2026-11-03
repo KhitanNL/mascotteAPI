@@ -14,7 +14,7 @@ another worker and adding its URL to the web app's list.
     GET    /v1/faces                               sample portraits: {faces: [{id, url}]}
     GET    /v1/faces/{id}                          one sample portrait (JPEG/PNG)
     GET    /v1/settings                            the face settings, with types, ranges and defaults
-    POST   /v1/sessions?quality&variant&autoFrame&idleLoop  body: face image -> {id, idle, poster, settings, ...}
+    POST   /v1/sessions?quality&variant&autoFrame&idleLoop&resolution  body: face image -> {id, idle, poster, settings, ...}
     POST   /v1/sessions?face={id}&...              the same with a sample portrait, no body
                                                    503 {"error": "full"} when no slot is free
     POST   /v1/sessions/{id}/clips?turn&seq        body: WAV -> video/mp4 (+ X-* timings)
@@ -124,7 +124,14 @@ SETTINGS = {
         "type": "integer", "min": 1, "max": 6, "default": 3, "unit": f"× {SECONDS_PER_IDLE_CHUNK} s",
         "description": "Length of the silent rest loop between replies. Longer looks less repetitive, opens a little slower.",
     },
+    "resolution": {
+        "type": "choice", "options": [512, 640, 768, 1024], "default": 512, "unit": "px (square)",
+        "experimental": [1024],
+        "description": "Video size. 512 is the model's native size. GPU time grows with the pixels: "
+                       "640 about 1.6x, 768 about 2.25x, 1024 about 4x (experimental).",
+    },
 }
+RESOLUTIONS = SETTINGS["resolution"]["options"]
 
 
 class SettingsError(ValueError):
@@ -160,12 +167,20 @@ def resolve_settings(params: dict[str, str]) -> tuple[dict, dict[str, str]]:
         if not i.isdigit() or not 1 <= int(i) <= 6:
             raise SettingsError("idleLoop must be 1 to 6")
         out["idleLoop"] = int(i)
+    r = pick("resolution", "size")
+    if r is not None:
+        if not r.isdigit() or int(r) not in RESOLUTIONS:
+            raise SettingsError(f"resolution must be one of {', '.join(map(str, RESOLUTIONS))}")
+        out["resolution"] = int(r)
     engine = {
         "steps": "4" if out["quality"] == "best" else "2",
         "seed": str(out["variant"]),
         "crop": "1" if out["autoFrame"] else "0",
         "idle_chunks": str(out["idleLoop"]),
     }
+    # Only sent when chosen, so an engine without sizes keeps working at 512.
+    if out["resolution"] != SETTINGS["resolution"]["default"]:
+        engine["size"] = str(out["resolution"])
     return out, engine
 
 
