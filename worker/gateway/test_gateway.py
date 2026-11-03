@@ -148,26 +148,31 @@ class RecordingEngines(FakeEngines):
 
 def test_settings_are_listed():
     s = client(FakeEngines()).get("/v1/settings", headers=AUTH).json()["settings"]
-    assert set(s) == {"quality", "variant", "autoFrame", "idleLoop"}
+    assert set(s) == {"quality", "variant", "autoFrame", "resolution", "idleLoop"}
+    assert s["resolution"]["options"] == [512, 640, 768, 1024] and s["resolution"]["default"] == 512
     assert s["quality"]["default"] == "best" and s["idleLoop"]["max"] == 6
 
 
 def test_settings_map_to_the_engine():
     e = RecordingEngines()
     c = client(e)
-    r = c.post("/v1/sessions?quality=fast&variant=7&autoFrame=false&idleLoop=5", content=b"jpg", headers=AUTH).json()
-    assert r["settings"] == {"quality": "fast", "variant": 7, "autoFrame": False, "idleLoop": 5}
-    assert e.opened_with[-1] == {"steps": "2", "seed": "7", "crop": "0", "idle_chunks": "5"}
+    r = c.post("/v1/sessions?quality=fast&variant=7&autoFrame=false&resolution=768&idleLoop=5", content=b"jpg", headers=AUTH).json()
+    assert r["settings"] == {"quality": "fast", "variant": 7, "autoFrame": False, "resolution": 768, "idleLoop": 5}
+    assert e.opened_with[-1] == {"steps": "2", "seed": "7", "crop": "0", "idle_chunks": "5", "res": "768"}
     # Defaults, and the engine's own names still work (mascotte.ai sends steps=4).
     assert c.post("/v1/sessions?steps=4", content=b"jpg", headers=AUTH).json()["settings"] == \
-        {"quality": "best", "variant": 42, "autoFrame": True, "idleLoop": 3}
-    assert e.opened_with[-1] == {"steps": "4", "seed": "42", "crop": "1", "idle_chunks": "3"}
+        {"quality": "best", "variant": 42, "autoFrame": True, "resolution": 512, "idleLoop": 3}
+    assert e.opened_with[-1] == {"steps": "4", "seed": "42", "crop": "1", "idle_chunks": "3", "res": "512"}
+    # the engine's own name for it too
+    c.post("/v1/sessions?res=1024", content=b"jpg", headers=AUTH)
+    assert e.opened_with[-1]["res"] == "1024"
 
 
 def test_bad_settings_are_refused_before_the_gpu():
     e = RecordingEngines()
     c = client(e)
-    for q in ("quality=ultra", "steps=3", "variant=-1", "variant=abc", "autoFrame=maybe", "idleLoop=0", "idleLoop=9"):
+    for q in ("quality=ultra", "steps=3", "variant=-1", "variant=abc", "autoFrame=maybe", "idleLoop=0", "idleLoop=9",
+              "resolution=700", "res=abc", "resolution=2048"):
         r = c.post(f"/v1/sessions?{q}", content=b"jpg", headers=AUTH)
         assert r.status_code == 400 and r.json()["error"] == "bad_setting", q
     assert e.opened_with == []

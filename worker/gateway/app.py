@@ -120,6 +120,10 @@ SETTINGS = {
         "type": "boolean", "default": True,
         "description": "Find and frame the face in the photo. Turn off only for a tight, centred portrait.",
     },
+    "resolution": {
+        "type": "choice", "options": [512, 640, 768, 1024], "default": 512, "unit": "px",
+        "description": "Pixels per side. 512 is what the model was trained at. Larger is sharper if the model holds up, and slower: about 2.5 to 5 times the GPU time at 768. Experimental above 512.",
+    },
     "idleLoop": {
         "type": "integer", "min": 1, "max": 6, "default": 3, "unit": f"× {SECONDS_PER_IDLE_CHUNK} s",
         "description": "Length of the silent rest loop between replies. Longer looks less repetitive, opens a little slower.",
@@ -155,6 +159,11 @@ def resolve_settings(params: dict[str, str]) -> tuple[dict, dict[str, str]]:
         if a.lower() not in ("1", "0", "true", "false"):
             raise SettingsError("autoFrame must be true or false")
         out["autoFrame"] = a.lower() in ("1", "true")
+    r = pick("resolution", "res")
+    if r is not None:
+        if not r.isdigit() or int(r) not in SETTINGS["resolution"]["options"]:
+            raise SettingsError("resolution must be one of 512, 640, 768, 1024")
+        out["resolution"] = int(r)
     i = pick("idleLoop", "idle_chunks")
     if i is not None:
         if not i.isdigit() or not 1 <= int(i) <= 6:
@@ -165,6 +174,7 @@ def resolve_settings(params: dict[str, str]) -> tuple[dict, dict[str, str]]:
         "seed": str(out["variant"]),
         "crop": "1" if out["autoFrame"] else "0",
         "idle_chunks": str(out["idleLoop"]),
+        "res": str(out["resolution"]),
     }
     return out, engine
 

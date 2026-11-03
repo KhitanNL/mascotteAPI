@@ -60,7 +60,11 @@ from flash_head.inference import get_audio_embedding, get_infer_params, run_pipe
 
 SHM_DIR = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
 TEMP_PREFIX = "fh-avatar-"
+# The square the model draws, in pixels per side, chosen per call (POST /sessions?res=). FlashHead was trained and
+# distilled at 512; the code takes any multiple of 32 (its position table reaches 1024), so the larger sizes are an
+# experiment: sharper if the weights carry over, and slower, about (res/512)^2 or more in GPU time.
 RESOLUTION = 512
+RESOLUTIONS = (512, 640, 768, 1024)
 FPS = 25
 # Generous: the team tests how many calls the GPU can carry (renders queue on _gpu_lock).
 MAX_SESSIONS = 32
@@ -87,9 +91,10 @@ class Closed(Exception):
 
 
 class AvatarSession:
-    def __init__(self, sid: str, view, samples: int):
+    def __init__(self, sid: str, view, samples: int, res: int = RESOLUTION):
         self.id = sid
         self.view = view
+        self.res = res
         self.window = np.zeros(samples, dtype=np.float32)
         # Turns are replies, numbered by Node from 1. A request for an older
         # turn than the latest one seen is stale (the participant interrupted).
@@ -121,7 +126,7 @@ def _params():
     }
 
 
-def _new_view(image_path: str, steps: int, seed: int, crop: bool):
+def _new_view(image_path: str, steps: int, seed: int, crop: bool, res: int = RESOLUTION):
     """A per-session copy of the pipeline. Caller holds the GPU lock."""
     base = _load_pipeline()
     view = copy.copy(base)  # own attribute dict, shared weights
@@ -131,7 +136,7 @@ def _new_view(image_path: str, steps: int, seed: int, crop: bool):
     # infer_params, whose step count and size 2.4 changes per request.
     view.prepare_params(
         cond_image_path_or_dir=image_path,
-        target_size=(RESOLUTION, RESOLUTION),
+        target_size=(res, res),
         frame_num=p["frame_num"],
         motion_frames_num=p["motion_frames_num"],
         sampling_steps=steps,
@@ -178,18 +183,26 @@ VIDEO_ARGS = [
 ]
 
 
+def _scaled_rate(rate: str, res: int) -> str:
+    """A bitrate given for 512 x 512, grown with the picture's area ("600k" at 768 is "1350k")."""
+    return f"{round(int(rate.rstrip('k')) * (res / RESOLUTION) ** 2)}k"
+
+
 class Encoder:
     """ffmpeg fed with raw frames from a writer thread, so encoding overlaps rendering."""
 
-    def __init__(self, out_path: str, duration_sec: float, audio_path: str | None, crf: int, maxrate: str):
+    def __init__(self, out_path: str, duration_sec: float, audio_path: str | None, crf: int, maxrate: str,
+                 res: int = RESOLUTION):
+        # H.264 level 3.1 stops at 3600 macroblocks a frame (768 x 768 is 2304); 1024 x 1024 needs level 4.0
+        video_args = ["4.0" if (a == "3.1" and res > 768) else a for a in VIDEO_ARGS]
         cmd = [
             "ffmpeg", "-y", "-loglevel", "error",
-            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{RESOLUTION}x{RESOLUTION}",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{res}x{res}",
             "-r", str(FPS), "-i", "pipe:0",
         ]
         if audio_path:
             cmd += ["-i", audio_path, "-map", "0:v:0", "-map", "1:a:0"]
-        cmd += VIDEO_ARGS + ["-crf", str(crf), "-maxrate", maxrate, "-bufsize", "1200k"]
+        cmd += video_args + ["-crf", str(crf), "-maxrate", _scaled_rate(maxrate, res), "-bufsize", _scaled_rate("1200k", res)]
         if audio_path:
             # The voice at its own sample rate, padded with silence to the
             # video's length. -cutoff for the same reason as 2.4: ffmpeg's AAC
@@ -278,7 +291,8 @@ def _delete(sid: str) -> bool:
     return s is not None
 
 
-def create_session(image_bytes: bytes, steps: int, seed: int, crop: bool, idle_chunks: int) -> dict:
+def create_session(image_bytes: bytes, steps: int, seed: int, crop: bool, idle_chunks: int,
+                   res: int = RESOLUTION) -> dict:
     k = _params()
     image_path = None
     t0 = time.monotonic()
@@ -294,7 +308,7 @@ def create_session(image_bytes: bytes, steps: int, seed: int, crop: bool, idle_c
         idle_frames: list[np.ndarray] = []
         with _gpu_lock:
             t_lock = time.monotonic()
-            view = _new_view(image_path, steps, seed, crop)
+            view = _new_view(image_path, steps, seed, crop, res)
             t_prep = time.monotonic()
             # The idle loop: exact digital silence. wav2vec2 normalises over the
             # whole window, so any noise, however faint, would be amplified
@@ -313,7 +327,7 @@ def create_session(image_bytes: bytes, steps: int, seed: int, crop: bool, idle_c
     loop = np.concatenate([frames, frames[-2:0:-1]])
     idle_path = _shm_path(".mp4")
     try:
-        enc = Encoder(idle_path, len(loop) / FPS, None, crf=26, maxrate="400k")
+        enc = Encoder(idle_path, len(loop) / FPS, None, crf=26, maxrate="400k", res=res)
         for i in range(0, len(loop), 24):
             enc.put(loop[i:i + 24])
         idle_mp4 = enc.finish()
@@ -321,13 +335,14 @@ def create_session(image_bytes: bytes, steps: int, seed: int, crop: bool, idle_c
         _unlink(idle_path)
     t_enc = time.monotonic()
 
-    session = AvatarSession(uuid.uuid4().hex, view, k["window_samples"])
+    session = AvatarSession(uuid.uuid4().hex, view, k["window_samples"], res)
     _register(session)
     meta = {
         "id": session.id,
         "idle": base64.b64encode(idle_mp4).decode("ascii"),
         "poster": base64.b64encode(_poster_jpeg(frames[0])).decode("ascii"),
         "idleSec": round(len(loop) / FPS, 2),
+        "res": res,
         "waitMs": int((t_lock - t0) * 1000),
         "prepMs": int((t_prep - t_lock) * 1000),
         "idleRenderMs": int((t_idle - t_prep) * 1000),
@@ -360,7 +375,7 @@ def render_clip(session: AvatarSession, wav_bytes: bytes, turn: int, seq: int) -
     out_path = _shm_path(".mp4")
     with open(wav_path, "wb") as fh:
         fh.write(wav_bytes)
-    enc = Encoder(out_path, duration, wav_path, crf=24, maxrate="600k")
+    enc = Encoder(out_path, duration, wav_path, crf=24, maxrate="600k", res=session.res)
     ok = False
     try:
         with _gpu_lock:
@@ -471,14 +486,17 @@ def _build_app():
         return {"ok": True, "sessions": count, "busy": _gpu_lock.locked()}
 
     @app.post("/sessions")
-    async def create(request: Request, steps: int = 4, seed: int = 42, crop: int = 1, idle_chunks: int = 3):
+    async def create(request: Request, steps: int = 4, seed: int = 42, crop: int = 1, idle_chunks: int = 3,
+                     res: int = RESOLUTION):
         if steps not in (2, 4):
             raise HTTPException(400, "steps must be 2 or 4")
+        if res not in RESOLUTIONS:
+            raise HTTPException(400, "res must be one of " + ", ".join(map(str, RESOLUTIONS)))
         body = await request.body()
         if not body or len(body) > MAX_IMAGE_BYTES:
             raise HTTPException(400, "image missing or too large")
         try:
-            return await run_in_threadpool(create_session, body, steps, seed, bool(crop), max(1, min(idle_chunks, 6)))
+            return await run_in_threadpool(create_session, body, steps, seed, bool(crop), max(1, min(idle_chunks, 6)), res)
         except (OSError, ValueError) as exc:
             raise HTTPException(400, f"could not read the image: {exc}")
         except Exception as exc:
