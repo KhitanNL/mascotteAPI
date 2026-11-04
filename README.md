@@ -54,7 +54,7 @@ scripts/run-local.sh test   # gateway tests, no GPU needed
 scripts/run-local.sh        # gateway on 127.0.0.1:7100
 ```
 
-`MAX_SLOTS=3` there keeps 2 of the 5 calls free for the other project.
+`MAX_SLOTS` (default 5 here) caps this worker's calls; the total, other projects included, never passes `GPU_CALLS`.
 
 ## Run on a cloud GPU
 

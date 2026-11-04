@@ -21,6 +21,6 @@ fi
 # .env holds WORKER_TOKEN (and any overrides); never committed.
 [ -f "$ROOT/.env" ] && set -a && . "$ROOT/.env" && set +a
 # Shared with the research study on this machine: keep 2 of its 5 calls free for it.
-export MAX_SLOTS="${MAX_SLOTS:-3}" GPU_CALLS="${GPU_CALLS:-5}" WORKER_NAME="${WORKER_NAME:-office-5090}"
+export MAX_SLOTS="${MAX_SLOTS:-5}" GPU_CALLS="${GPU_CALLS:-5}" WORKER_NAME="${WORKER_NAME:-office-5090}"
 cd "$ROOT/worker/gateway"
 exec "$VENV/bin/python" app.py
