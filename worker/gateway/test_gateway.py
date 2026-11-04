@@ -190,3 +190,13 @@ def test_refuses_to_start_without_a_strong_token(monkeypatch):
     monkeypatch.setenv("WORKER_TOKEN", "short")
     with pytest.raises(SystemExit):
         Config.from_env()
+
+
+def test_ready_needs_only_the_face_engine():
+    class FaceOnly(FakeEngines):
+        def handler(self, req):
+            if req.url.host in ("stt", "llm"):
+                return httpx.Response(503)
+            return super().handler(req)
+    s = client(FaceOnly()).get("/v1/status", headers=AUTH).json()
+    assert s["ready"] is True and s["engines"] == {"face": True, "stt": False, "llm": False}

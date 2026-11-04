@@ -238,7 +238,9 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
         free = 0 if engine is None else max(0, min(cfg.max_slots - mine, cfg.gpu_calls - engine))
         return {
             "worker": cfg.worker_name,
-            "ready": engine is not None and stt and llm,
+            # Ready = the face engine is up: speech-to-text and the LLM are extras
+            # (mascotte.ai has its own) and are off outside office hours.
+            "ready": engine is not None,
             "engines": {"face": engine is not None, "stt": stt, "llm": llm},
             "slots": {"gpuCalls": cfg.gpu_calls, "maxSlots": cfg.max_slots, "mine": mine,
                       "engineSessions": engine, "free": free},
