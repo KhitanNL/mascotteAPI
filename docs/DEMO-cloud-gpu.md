@@ -1,12 +1,17 @@
 # Demo day: extra cloud GPU behind face.mascotte.ai
 
-The demo keeps using https://face.mascotte.ai. During the demo the office
-gateway sends marked calls to a RunPod RTX 5090 first and to the office GPU
-when the cloud is full or down. Only calls opened with `cloud=1` are marked:
-mascotte.ai adds it for the accounts in `FACE_CLOUD_EMAILS` (only
-khitans@gmail.com), so nobody else uses the paid GPU.
+Plan (agreed 23 Nov 2026): start at **12:00 on 24 Nov**, working by 14:00. Demo 16:00 to 20:00.
 
-mascotte.ai sidecar, in `faceOpen`:
+The demo keeps using https://face.mascotte.ai. The office gateway sends marked calls to the
+RunPod GPU first and to the office GPU when the cloud is full or down. Only calls opened with
+`cloud=1` are marked: mascotte.ai adds it for the accounts in `FACE_CLOUD_EMAILS` (only the
+owner's account), so nobody else uses the paid GPU.
+
+## Before 12:00: is mascotte.ai sending cloud=1?
+
+**Not built yet (23 Nov).** Without it no call ever uses the cloud GPU. The request for the
+mascotte.ai side (sidecar `faceOpen` + Railway env `FACE_CLOUD_EMAILS`, plus the cloud row on the
+"Video GPUs" panel) is in the shared notes file `mascotte-ai-cloud-gpu-request.md`. Snippet:
 
 ```js
 const cloudUsers = (process.env.FACE_CLOUD_EMAILS || "").toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
@@ -14,34 +19,45 @@ const cloud = cloudUsers.includes(String(user.email || "").toLowerCase()) ? "&cl
 const r = await face(`/v1/sessions?steps=4${cloud}`, { method: "POST", headers: { "content-type": contentType }, body: imageBuffer });
 ```
 
-## Once: image and template
+## How it runs
 
-- Image: `ghcr.io/khitannl/mascotte-worker:demo` (private, built from `docker/Dockerfile`, models baked in).
-- RunPod template: that image, registry credential for ghcr.io, HTTP port 7100,
-  container disk 60 GB, env `WORKER_TOKEN` (a RunPod secret, its own token, not the office one).
-- Pod: Secure Cloud, on demand, EU, RTX 5090. About $1.20 per hour. Keep at least $20 balance (pods stop at $0).
+- No image, no template: a stock `runpod/pytorch` pod runs `docker/pod-bootstrap.sh` from GitHub,
+  which installs the face engine (FlashHead Lite) and the gateway and serves the worker API on :7100.
+  First start ~10 min.
+- Everything is done with `scripts/runpod.py` from WSL in `/home/khitan/mascotteAPI`
+  (RunPod API v2; v1 was retired 15 Nov 2026).
+- Secrets, chmod 600, gitignored, never printed: `.runpod-api-key` (RunPod key "mascotte-demo",
+  scopes pods, catalog read, billing read; re-save with `scripts/runpod-key.sh`), `.runpod-token`
+  (worker token for the pod), `.runpod-pod` (pod id), `.cloud-workers` (gateway list).
+- Approved budget: about $0.90 per hour (`create --max 0.90` is the default cap). Ask before going higher.
 
-## Demo day
+## 24 Nov
 
 | When | Step | Check |
 |---|---|---|
-| 15:30 | Start the pod from the template | RunPod shows it running |
-| 15:30 to ~15:40 | Wait until it is ready | `curl -s https://<pod-id>-7100.proxy.runpod.net/ping` answers `{"ok":true}` |
-| ~15:40 | Put it behind the office: `scripts/cloud.sh add demo https://<pod-id>-7100.proxy.runpod.net` (paste its token when asked) | `scripts/cloud.sh status` shows `demo` with `ready: True` |
-| 15:50 | Test call from a laptop and a phone on the demo | `scripts/cloud.sh status` shows the cloud with fewer free calls during the call |
+| 12:00 | `python3 scripts/runpod.py gpus` | What is free and at what price |
+| 12:00 | `python3 scripts/runpod.py create` (tries 5090, then 4090, L40S, ... under the cap, EU first) | Prints pod id and $/h |
+| ~12:10 | `python3 scripts/runpod.py status` until `worker: ready=True` | If not after 20 min: RunPod web terminal, `tail -50 /workspace/boot.log` |
+| ~12:15 | `python3 scripts/runpod.py connect` | `status` says `listed on face.mascotte.ai: on`; office `/v1/status` shows `cloud` with `ready: true` |
+| 12:20 to 14:00 | Test calls from the owner's account on mascotte.ai (laptop + phone), then several at once | Office `/v1/status` cloud `held` goes up; no stutter; note calls per GPU |
 | 16:00 to 20:00 | Demo | If the cloud fails, new calls go to the office by themselves |
-| 20:00 | `scripts/cloud.sh off demo` | No new calls go to the cloud |
-| when its calls end | Stop (terminate) the pod in RunPod | Billing stops; note the cost |
+| 20:00 | `python3 scripts/runpod.py disconnect` | No new calls on the cloud |
+| when its calls end | `python3 scripts/runpod.py delete`, then `cost --hours 12` | Report the cost |
+
+Price and stock change by the hour (23 Nov 16:30: Secure 5090 $1.39/h; Community 5090 $0.69/h;
+Secure 4090 $0.89/h in EU-CZ-1). Stopping a pod and starting it later can fail when the GPU is
+taken, so on demo day keep the pod running from 12:00 until the demo ends.
 
 ## If something goes wrong
 
-- Cloud slow or broken: `scripts/cloud.sh off demo`. New calls go to the office.
+- Cloud slow or broken: `python3 scripts/runpod.py disconnect`. New calls go to the office.
   The office has 2 calls for mascotte while the S4YFS study runs (until 29 Nov, maybe 6 Dec).
 - Office worker restarts: only when `curl -s http://127.0.0.1:7012/health` shows `"sessions":0`.
 - Never paste tokens in chat or logs.
 
-## Measured (fill in after the test session)
+## Measured (fill in on 24 Nov)
 
-- Pod start to ready: _
-- Calls per cloud RTX 5090 without stutter: _
-- Cost of the test session: _
+- GPU, cloud, data center, $/h: _
+- Pod create to ready: _
+- Calls per cloud GPU without stutter: _
+- Total cost: _

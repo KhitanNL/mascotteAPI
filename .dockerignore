@@ -10,3 +10,4 @@ faces/
 router/
 .runpod-token
 .runpod-api-key
+.runpod-pod

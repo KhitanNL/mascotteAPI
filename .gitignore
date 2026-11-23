@@ -8,3 +8,4 @@ faces/
 .cloud-workers
 .runpod-token
 .runpod-api-key
+.runpod-pod
