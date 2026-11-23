@@ -187,7 +187,7 @@ def cloud_file(tmp_path, line="demo|http://cloud|cloudtoken"):
 def test_new_calls_go_to_the_cloud_first_and_stay_there(tmp_path):
     e = WithCloud()
     c = client(e, cloud_file=cloud_file(tmp_path))
-    r = c.post("/v1/sessions?quality=fast", content=b"jpg", headers=AUTH).json()
+    r = c.post("/v1/sessions?quality=fast&cloud=1", content=b"jpg", headers=AUTH).json()
     assert r["id"] == "demo~c1" and r["worker"] == "demo" and r["idle"] == "CC"
     assert ("POST", "/v1/sessions", "quality=fast") in e.cloud_calls and e.sessions == set()  # office untouched
     clip = c.post("/v1/sessions/demo~c1/clips?turn=1&seq=0", content=b"wav", headers=AUTH)
@@ -198,10 +198,18 @@ def test_new_calls_go_to_the_cloud_first_and_stay_there(tmp_path):
     assert c.get("/v1/status", headers=AUTH).json()["slots"]["mine"] == 0
 
 
+def test_unmarked_calls_never_use_the_cloud(tmp_path):
+    e = WithCloud()
+    c = client(e, cloud_file=cloud_file(tmp_path))
+    for q in ("", "?cloud=0", "?quality=fast"):
+        assert c.post(f"/v1/sessions{q}", content=b"jpg", headers=AUTH).json()["id"].startswith("s")
+    assert not any(path == "/v1/sessions" for _, path, _ in e.cloud_calls)
+
+
 def test_office_takes_over_when_the_cloud_is_full_or_down(tmp_path):
     for e in (WithCloud(cloud_full=True), WithCloud(cloud_down=True)):
         c = client(e, cloud_file=cloud_file(tmp_path))
-        r = c.post("/v1/sessions", content=b"jpg", headers=AUTH).json()
+        r = c.post("/v1/sessions?cloud=1", content=b"jpg", headers=AUTH).json()
         assert r["id"] == "s1" and "worker" not in r
 
 
@@ -209,9 +217,9 @@ def test_a_switched_off_cloud_takes_no_new_calls_but_keeps_open_ones(tmp_path):
     e = WithCloud()
     path = cloud_file(tmp_path)
     c = client(e, cloud_file=path)
-    sid = c.post("/v1/sessions", content=b"jpg", headers=AUTH).json()["id"]
+    sid = c.post("/v1/sessions?cloud=1", content=b"jpg", headers=AUTH).json()["id"]
     cloud_file(tmp_path, "#demo|http://cloud|cloudtoken")  # switched off, no restart
-    assert c.post("/v1/sessions", content=b"jpg", headers=AUTH).json()["id"] == "s1"
+    assert c.post("/v1/sessions?cloud=1", content=b"jpg", headers=AUTH).json()["id"] == "s1"
     assert c.post(f"/v1/sessions/{sid}/clips?turn=1&seq=0", content=b"wav", headers=AUTH).content == b"cloudmp4"
     s = c.get("/v1/status", headers=AUTH).json()["cloud"]
     assert s == [{"name": "demo", "enabled": False, "ready": True, "free": 5, "gpu": "RTX 5090"}]
@@ -223,7 +231,7 @@ def test_sample_faces_go_to_the_cloud_as_images(tmp_path):
     (faces / "3.jpg").write_bytes(b"\xff\xd8three")
     e = WithCloud()
     c = client(e, cloud_file=cloud_file(tmp_path), faces_dir=str(faces))
-    assert c.post("/v1/sessions?face=3&idleLoop=2", headers=AUTH).json()["id"] == "demo~c1"
+    assert c.post("/v1/sessions?face=3&idleLoop=2&cloud=1", headers=AUTH).json()["id"] == "demo~c1"
     assert e.cloud_bodies == [b"\xff\xd8three"] and ("POST", "/v1/sessions", "idleLoop=2") in e.cloud_calls
 
 

@@ -43,8 +43,9 @@ behind this same URL, so the web app needs no change. The file .cloud-workers
     #name|https://...|token      a commented line takes no new calls, but calls
                                  already open there keep working
 
-A new call goes to the first listed cloud worker with room, and to this GPU
-when none has. Its id becomes "name~id", so every later request of that call
+Only calls opened with cloud=1 use them (the web app sets it for the accounts
+allowed on the cloud); all others stay on this GPU. A marked call goes to the
+first listed cloud worker with room, and to this GPU when none has. Its id becomes "name~id", so every later request of that call
 goes to the same machine, even after a restart of this gateway. Sample faces
 are sent as images, so the cloud needs no copy of them.
 """
@@ -369,6 +370,9 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
     async def open_session(request: Request):
         query = dict(request.query_params)
         sample = query.pop("face", None)
+        # Only calls the web app marks with cloud=1 may use a cloud GPU (for now:
+        # only the owner's own account), everyone else stays on this GPU.
+        want_cloud = query.pop("cloud", "").lower() in ("1", "true")
         try:
             chosen, params = resolve_settings(query)
         except SettingsError as exc:
@@ -383,8 +387,8 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
             body, ctype = await request.body(), request.headers.get("content-type", "application/octet-stream")
         if not body:
             raise HTTPException(400, "face image missing")
-        # Cloud first, when one is switched on; this GPU when none has room.
-        opened = await open_in_cloud(query, body, ctype)
+        # Marked calls: cloud first, when one is switched on; this GPU when none has room.
+        opened = await open_in_cloud(query, body, ctype) if want_cloud else None
         if opened:
             return opened
         # One at a time, so two calls cannot both take the last slot.

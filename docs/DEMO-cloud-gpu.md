@@ -1,8 +1,18 @@
 # Demo day: extra cloud GPU behind face.mascotte.ai
 
 The demo keeps using https://face.mascotte.ai. During the demo the office
-gateway sends new calls to a RunPod RTX 5090 first and to the office GPU when
-the cloud is full or down. Nothing changes in the demo app.
+gateway sends marked calls to a RunPod RTX 5090 first and to the office GPU
+when the cloud is full or down. Only calls opened with `cloud=1` are marked:
+mascotte.ai adds it for the accounts in `FACE_CLOUD_EMAILS` (only
+khitans@gmail.com), so nobody else uses the paid GPU.
+
+mascotte.ai sidecar, in `faceOpen`:
+
+```js
+const cloudUsers = (process.env.FACE_CLOUD_EMAILS || "").toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
+const cloud = cloudUsers.includes(String(user.email || "").toLowerCase()) ? "&cloud=1" : "";
+const r = await face(`/v1/sessions?steps=4${cloud}`, { method: "POST", headers: { "content-type": contentType }, body: imageBuffer });
+```
 
 ## Once: image and template
 
