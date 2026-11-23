@@ -7,3 +7,4 @@ models/
 faces/
 .cloud-workers
 .runpod-token
+.runpod-api-key

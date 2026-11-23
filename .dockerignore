@@ -9,3 +9,4 @@ faces/
 **/node_modules
 router/
 .runpod-token
+.runpod-api-key
