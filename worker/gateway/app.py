@@ -316,8 +316,10 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
             s = r.json() if r.status_code == 200 else {}
         except (httpx.HTTPError, ValueError):
             s = {}
+        slots_ = s.get("slots") or {}
         return {"name": w.name, "enabled": w.enabled, "ready": bool(s.get("ready")),
-                "free": (s.get("slots") or {}).get("free", 0), "gpu": s.get("gpu")}
+                "held": slots_.get("mine", 0), "maxSlots": slots_.get("maxSlots", 0),
+                "free": slots_.get("free", 0), "gpu": s.get("gpu")}
 
     @app.get("/ping")
     async def ping():

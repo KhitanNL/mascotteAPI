@@ -156,7 +156,7 @@ class WithCloud(FakeEngines):
         path = req.url.path
         self.cloud_calls.append((req.method, path, str(req.url.query, "ascii")))
         if path == "/v1/status":
-            return httpx.Response(200, json={"ready": True, "slots": {"free": 0 if self.cloud_full else 5},
+            return httpx.Response(200, json={"ready": True, "slots": {"mine": len(self.cloud_sessions), "maxSlots": 5, "free": 0 if self.cloud_full else 5 - len(self.cloud_sessions)},
                                              "gpu": "RTX 5090"})
         if path == "/v1/sessions":
             if self.cloud_full:
@@ -222,7 +222,7 @@ def test_a_switched_off_cloud_takes_no_new_calls_but_keeps_open_ones(tmp_path):
     assert c.post("/v1/sessions?cloud=1", content=b"jpg", headers=AUTH).json()["id"] == "s1"
     assert c.post(f"/v1/sessions/{sid}/clips?turn=1&seq=0", content=b"wav", headers=AUTH).content == b"cloudmp4"
     s = c.get("/v1/status", headers=AUTH).json()["cloud"]
-    assert s == [{"name": "demo", "enabled": False, "ready": True, "free": 5, "gpu": "RTX 5090"}]
+    assert s == [{"name": "demo", "enabled": False, "ready": True, "held": 1, "maxSlots": 5, "free": 4, "gpu": "RTX 5090"}]
 
 
 def test_sample_faces_go_to_the_cloud_as_images(tmp_path):
