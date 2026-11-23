@@ -1,0 +1,9 @@
+# Never send secrets, history or the sample faces (rights stay with their owner) to the image build.
+.env
+.env.*
+!.env.example
+.git
+faces/
+**/__pycache__
+**/node_modules
+router/
