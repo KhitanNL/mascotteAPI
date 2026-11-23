@@ -34,6 +34,19 @@ gateway refuses a new call when either
     reaches GPU_CALLS.
 A refusal is quick and explicit (503 "full"), so the web app can try the next
 worker or start a cloud one.
+
+Cloud overflow. Extra GPUs (for example a RunPod worker for a demo) can sit
+behind this same URL, so the web app needs no change. The file .cloud-workers
+(next to .env, never committed) lists them, one per line:
+
+    name|https://url-of-that-worker|its WORKER_TOKEN
+    #name|https://...|token      a commented line takes no new calls, but calls
+                                 already open there keep working
+
+A new call goes to the first listed cloud worker with room, and to this GPU
+when none has. Its id becomes "name~id", so every later request of that call
+goes to the same machine, even after a restart of this gateway. Sample faces
+are sent as images, so the cloud needs no copy of them.
 """
 
 from __future__ import annotations
@@ -66,6 +79,9 @@ class Config:
     worker_name: str = "worker"
     # Sample portraits offered to users (not in git: rights stay with their owner).
     faces_dir: str = str(Path(__file__).resolve().parents[2] / "faces")
+    # Cloud workers to send new calls to first (see CLOUD OVERFLOW below). Read on
+    # every new call, so switching the cloud on or off needs no restart.
+    cloud_file: str = str(Path(__file__).resolve().parents[2] / ".cloud-workers")
 
     @staticmethod
     def from_env() -> "Config":
@@ -83,6 +99,7 @@ class Config:
             max_slots=min(gpu_calls, int(os.environ.get("MAX_SLOTS", str(gpu_calls)))),
             worker_name=os.environ.get("WORKER_NAME", os.uname().nodename),
             faces_dir=os.environ.get("FACES_DIR", Config.faces_dir),
+            cloud_file=os.environ.get("CLOUD_WORKERS_FILE", Config.cloud_file),
         )
 
 
@@ -184,6 +201,33 @@ def resolve_settings(params: dict[str, str]) -> tuple[dict, dict[str, str]]:
     return out, engine
 
 
+@dataclass(frozen=True)
+class CloudWorker:
+    name: str
+    url: str
+    token: str
+    enabled: bool
+
+
+def read_cloud_workers(path: str) -> list[CloudWorker]:
+    """The cloud workers in the file, enabled or not. A missing file means none."""
+    try:
+        lines = Path(path).read_text().splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        line = line.strip()
+        enabled = not line.startswith("#")
+        parts = [p.strip() for p in line.lstrip("#").split("|")]
+        if len(parts) == 3 and parts[0].replace("-", "").isalnum() and parts[1].startswith("http") and parts[2]:
+            out.append(CloudWorker(parts[0], parts[1].rstrip("/"), parts[2], enabled))
+    return out
+
+
+SEP = "~"  # between a cloud worker's name and its session id
+
+
 def _gpu_name() -> str | None:
     if not shutil.which("nvidia-smi"):
         return None
@@ -225,6 +269,55 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
         return Response(content=r.content, status_code=r.status_code,
                         media_type=media_type or r.headers.get("content-type"), headers=headers)
 
+    # ── Cloud overflow ──
+    # Every cloud worker seen since start, so open calls keep their route even
+    # when a line is removed from the file mid-call.
+    known: dict[str, CloudWorker] = {}
+
+    def cloud_workers() -> list[CloudWorker]:
+        found = read_cloud_workers(cfg.cloud_file)
+        known.update({w.name: w for w in found})
+        return found
+
+    def cloud_headers(w: CloudWorker, extra: dict | None = None) -> dict:
+        # A User-Agent: Cloudflare (and RunPod's proxy) block some default ones.
+        return {"authorization": f"Bearer {w.token}", "user-agent": "mascotte-gateway/1", **(extra or {})}
+
+    def route(sid: str) -> tuple[CloudWorker, str] | None:
+        """(cloud worker, its session id) for a call that lives in the cloud, else None."""
+        if SEP not in sid:
+            return None
+        name, inner = sid.split(SEP, 1)
+        if name not in known:
+            cloud_workers()
+        w = known.get(name)
+        if not w:
+            raise HTTPException(404, "no such session")
+        return w, inner
+
+    async def open_in_cloud(query: dict, body: bytes, ctype: str) -> JSONResponse | None:
+        for w in [w for w in cloud_workers() if w.enabled]:
+            try:
+                r = await client.post(f"{w.url}/v1/sessions", params=query, content=body,
+                                      headers=cloud_headers(w, {"content-type": ctype}),
+                                      timeout=httpx.Timeout(90.0, connect=5.0))
+            except httpx.HTTPError:
+                continue  # down or unreachable: try the next, then this GPU
+            if r.status_code == 200:
+                opened = r.json()
+                if opened.get("id"):
+                    return JSONResponse({**opened, "id": f"{w.name}{SEP}{opened['id']}", "worker": w.name})
+        return None
+
+    async def cloud_status(w: CloudWorker) -> dict:
+        try:
+            r = await client.get(f"{w.url}/v1/status", headers=cloud_headers(w), timeout=5.0)
+            s = r.json() if r.status_code == 200 else {}
+        except (httpx.HTTPError, ValueError):
+            s = {}
+        return {"name": w.name, "enabled": w.enabled, "ready": bool(s.get("ready")),
+                "free": (s.get("slots") or {}).get("free", 0), "gpu": s.get("gpu")}
+
     @app.get("/ping")
     async def ping():
         return {"ok": True}
@@ -232,8 +325,9 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
     @app.get("/v1/status", dependencies=[Depends(auth)])
     async def status():
         slots.sweep(cfg.session_idle_sec)
-        engine, stt, llm = await asyncio.gather(
-            engine_sessions(), up(f"{cfg.stt_url}/health"), up(f"{cfg.ollama_url}/api/tags"))
+        engine, stt, llm, *cloud = await asyncio.gather(
+            engine_sessions(), up(f"{cfg.stt_url}/health"), up(f"{cfg.ollama_url}/api/tags"),
+            *(cloud_status(w) for w in cloud_workers()))
         mine = len(slots.last_used)
         free = 0 if engine is None else max(0, min(cfg.max_slots - mine, cfg.gpu_calls - engine))
         return {
@@ -246,6 +340,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
                       "engineSessions": engine, "free": free},
             "llmModel": cfg.llm_model,
             "gpu": _gpu_name(),
+            "cloud": cloud,
         }
 
     def sample_faces() -> dict[str, Path]:
@@ -288,6 +383,10 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
             body, ctype = await request.body(), request.headers.get("content-type", "application/octet-stream")
         if not body:
             raise HTTPException(400, "face image missing")
+        # Cloud first, when one is switched on; this GPU when none has room.
+        opened = await open_in_cloud(query, body, ctype)
+        if opened:
+            return opened
         # One at a time, so two calls cannot both take the last slot.
         async with slots.lock:
             slots.sweep(cfg.session_idle_sec)
@@ -309,6 +408,16 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
 
     @app.post("/v1/sessions/{sid}/clips", dependencies=[Depends(auth)])
     async def clip(sid: str, request: Request):
+        if cloud := route(sid):
+            w, inner = cloud
+            try:
+                r = await client.post(f"{w.url}/v1/sessions/{inner}/clips", params=dict(request.query_params),
+                                      content=await request.body(),
+                                      headers=cloud_headers(w, {"content-type": request.headers.get(
+                                          "content-type", "audio/wav")}))
+            except httpx.HTTPError:
+                return JSONResponse({"error": "cloud_unreachable", "worker": w.name}, status_code=502)
+            return passthrough(r)
         slots.touch(sid)
         r = await client.post(f"{cfg.avatar_url}/sessions/{sid}/clips", params=dict(request.query_params),
                               content=await request.body(), headers={"content-type": "audio/wav"})
@@ -319,11 +428,26 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
 
     @app.post("/v1/sessions/{sid}/cancel", dependencies=[Depends(auth)])
     async def cancel(sid: str, request: Request):
+        if cloud := route(sid):
+            w, inner = cloud
+            try:
+                r = await client.post(f"{w.url}/v1/sessions/{inner}/cancel", params=dict(request.query_params),
+                                      headers=cloud_headers(w), timeout=15.0)
+            except httpx.HTTPError:
+                return JSONResponse({"error": "cloud_unreachable", "worker": w.name}, status_code=502)
+            return passthrough(r, "application/json")
         r = await client.post(f"{cfg.avatar_url}/sessions/{sid}/cancel", params=dict(request.query_params))
         return passthrough(r, "application/json")
 
     @app.delete("/v1/sessions/{sid}", dependencies=[Depends(auth)])
     async def close_session(sid: str):
+        if cloud := route(sid):
+            w, inner = cloud
+            try:
+                r = await client.delete(f"{w.url}/v1/sessions/{inner}", headers=cloud_headers(w), timeout=15.0)
+            except httpx.HTTPError:
+                return JSONResponse({"error": "cloud_unreachable", "worker": w.name}, status_code=502)
+            return passthrough(r, "application/json")
         slots.last_used.pop(sid, None)
         r = await client.delete(f"{cfg.avatar_url}/sessions/{sid}")
         return passthrough(r, "application/json")

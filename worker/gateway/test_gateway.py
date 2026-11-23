@@ -55,6 +55,7 @@ class FakeEngines:
 
 
 def client(engines: FakeEngines, **cfg) -> TestClient:
+    cfg.setdefault("cloud_file", "/nonexistent/.cloud-workers")  # never the real one
     config = Config(token=TOKEN, avatar_url="http://avatar", stt_url="http://stt", ollama_url="http://llm", **cfg)
     return TestClient(create_app(config, transport=httpx.MockTransport(engines.handler)))
 
@@ -133,6 +134,103 @@ def test_sample_faces(tmp_path):
     assert c.get("/v1/faces/notes", headers=AUTH).status_code == 404
     assert c.post("/v1/sessions?face=1", headers=AUTH).json()["id"] == "s1"
     assert c.post("/v1/sessions?face=nope", headers=AUTH).status_code == 404
+
+
+class WithCloud(FakeEngines):
+    """The office engines plus one cloud worker (another gateway) at http://cloud."""
+
+    def __init__(self, cloud_full=False, cloud_down=False):
+        super().__init__()
+        self.cloud_full, self.cloud_down = cloud_full, cloud_down
+        self.cloud_sessions: set[str] = set()
+        self.cloud_calls: list[tuple[str, str, str]] = []  # (method, path, query)
+        self.cloud_bodies: list[bytes] = []
+
+    def handler(self, req: httpx.Request) -> httpx.Response:
+        if req.url.host != "cloud":
+            return super().handler(req)
+        if self.cloud_down:
+            raise httpx.ConnectError("down")
+        if req.headers.get("authorization") != "Bearer cloudtoken":
+            return httpx.Response(401)
+        path = req.url.path
+        self.cloud_calls.append((req.method, path, str(req.url.query, "ascii")))
+        if path == "/v1/status":
+            return httpx.Response(200, json={"ready": True, "slots": {"free": 0 if self.cloud_full else 5},
+                                             "gpu": "RTX 5090"})
+        if path == "/v1/sessions":
+            if self.cloud_full:
+                return httpx.Response(503, json={"error": "full"})
+            self.cloud_bodies.append(req.content)
+            sid = f"c{len(self.cloud_sessions) + 1}"
+            self.cloud_sessions.add(sid)
+            return httpx.Response(200, json={"id": sid, "idle": "CC", "poster": "DD", "settings": {}})
+        sid = path.split("/")[3]
+        if sid not in self.cloud_sessions:
+            return httpx.Response(404, json={"detail": "no such session"})
+        if path.endswith("/clips"):
+            return httpx.Response(200, content=b"cloudmp4", headers={"content-type": "video/mp4", "X-Render-Ms": "99"})
+        if path.endswith("/cancel"):
+            return httpx.Response(200, json={"ok": True})
+        if req.method == "DELETE":
+            self.cloud_sessions.discard(sid)
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404)
+
+
+def cloud_file(tmp_path, line="demo|http://cloud|cloudtoken"):
+    f = tmp_path / ".cloud-workers"
+    f.write_text(f"# demo GPU\n{line}\n")
+    return str(f)
+
+
+def test_new_calls_go_to_the_cloud_first_and_stay_there(tmp_path):
+    e = WithCloud()
+    c = client(e, cloud_file=cloud_file(tmp_path))
+    r = c.post("/v1/sessions?quality=fast", content=b"jpg", headers=AUTH).json()
+    assert r["id"] == "demo~c1" and r["worker"] == "demo" and r["idle"] == "CC"
+    assert ("POST", "/v1/sessions", "quality=fast") in e.cloud_calls and e.sessions == set()  # office untouched
+    clip = c.post("/v1/sessions/demo~c1/clips?turn=1&seq=0", content=b"wav", headers=AUTH)
+    assert clip.content == b"cloudmp4" and clip.headers["x-render-ms"] == "99"
+    assert c.post("/v1/sessions/demo~c1/cancel?turn=1", headers=AUTH).status_code == 200
+    assert c.delete("/v1/sessions/demo~c1", headers=AUTH).status_code == 200 and e.cloud_sessions == set()
+    # The office's own slots were never used.
+    assert c.get("/v1/status", headers=AUTH).json()["slots"]["mine"] == 0
+
+
+def test_office_takes_over_when_the_cloud_is_full_or_down(tmp_path):
+    for e in (WithCloud(cloud_full=True), WithCloud(cloud_down=True)):
+        c = client(e, cloud_file=cloud_file(tmp_path))
+        r = c.post("/v1/sessions", content=b"jpg", headers=AUTH).json()
+        assert r["id"] == "s1" and "worker" not in r
+
+
+def test_a_switched_off_cloud_takes_no_new_calls_but_keeps_open_ones(tmp_path):
+    e = WithCloud()
+    path = cloud_file(tmp_path)
+    c = client(e, cloud_file=path)
+    sid = c.post("/v1/sessions", content=b"jpg", headers=AUTH).json()["id"]
+    cloud_file(tmp_path, "#demo|http://cloud|cloudtoken")  # switched off, no restart
+    assert c.post("/v1/sessions", content=b"jpg", headers=AUTH).json()["id"] == "s1"
+    assert c.post(f"/v1/sessions/{sid}/clips?turn=1&seq=0", content=b"wav", headers=AUTH).content == b"cloudmp4"
+    s = c.get("/v1/status", headers=AUTH).json()["cloud"]
+    assert s == [{"name": "demo", "enabled": False, "ready": True, "free": 5, "gpu": "RTX 5090"}]
+
+
+def test_sample_faces_go_to_the_cloud_as_images(tmp_path):
+    faces = tmp_path / "faces"
+    faces.mkdir()
+    (faces / "3.jpg").write_bytes(b"\xff\xd8three")
+    e = WithCloud()
+    c = client(e, cloud_file=cloud_file(tmp_path), faces_dir=str(faces))
+    assert c.post("/v1/sessions?face=3&idleLoop=2", headers=AUTH).json()["id"] == "demo~c1"
+    assert e.cloud_bodies == [b"\xff\xd8three"] and ("POST", "/v1/sessions", "idleLoop=2") in e.cloud_calls
+
+
+def test_unknown_cloud_session_is_404_and_bad_lines_are_ignored(tmp_path):
+    c = client(WithCloud(), cloud_file=cloud_file(tmp_path, "bad line without bars"))
+    assert c.post("/v1/sessions/nope~c1/clips?turn=1&seq=0", content=b"wav", headers=AUTH).status_code == 404
+    assert c.post("/v1/sessions", content=b"jpg", headers=AUTH).json()["id"] == "s1"
 
 
 class RecordingEngines(FakeEngines):
