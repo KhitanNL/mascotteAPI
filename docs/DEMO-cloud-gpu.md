@@ -7,6 +7,11 @@ RunPod GPU first and to the office GPU when the cloud is full or down. Only call
 `cloud=1` are marked: mascotte.ai adds it for the accounts in `FACE_CLOUD_EMAILS` (only the
 owner's account), so nobody else uses the paid GPU.
 
+## Before 12:00: ElevenLabs credit
+
+mascotte.ai's voice is ElevenLabs. With no credit the avatar opens but never speaks (no greeting);
+the video side looks fine. Top it up for 16:00 to 20:00 of talking. (Happened 23 Nov.)
+
 ## Before 12:00: is mascotte.ai sending cloud=1?
 
 **Not built yet (23 Nov).** Without it no call ever uses the cloud GPU. The request for the
