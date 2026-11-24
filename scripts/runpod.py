@@ -228,13 +228,13 @@ def main():
     sub.add_parser("status")
     cn = sub.add_parser("connect")
     cn.add_argument("--force", action="store_true")
-    for n in ("disconnect", "stop", "start", "delete"):
+    for n in ("disconnect", "stop", "start", "restart", "delete"):
         sub.add_parser(n)
     co = sub.add_parser("cost")
     co.add_argument("--hours", type=int, default=24)
     a = ap.parse_args()
     {"gpus": cmd_gpus, "create": cmd_create, "status": cmd_status, "connect": cmd_connect,
-     "disconnect": cmd_disconnect, "stop": lambda a: action("stop"), "start": lambda a: action("start"),
+     "disconnect": cmd_disconnect, "stop": lambda a: action("stop"), "start": lambda a: action("start"), "restart": lambda a: action("restart"),
      "delete": cmd_delete, "cost": cmd_cost}[a.cmd](a)
 
 

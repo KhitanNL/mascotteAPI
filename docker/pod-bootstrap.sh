@@ -16,8 +16,29 @@ mkdir -p "$W/logs"
 log() { echo "[boot $(date +%T)] $*"; }
 T0=$(date +%s)
 
+# Until the gateway is up, :7100 answers 503 with the tail of this install log, so its
+# progress (or why it stopped) can be read through the RunPod proxy. No secrets are logged.
+cat > /tmp/progress.py <<'PY'
+import http.server, subprocess
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        tail = subprocess.run(["tail", "-40", "/workspace/boot.log"], capture_output=True, text=True).stdout
+        body = ("installing (not ready)\n\n" + tail).encode()
+        self.send_response(503); self.send_header("content-type", "text/plain"); self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(("0.0.0.0", 7100), H).serve_forever()
+PY
+python3 /tmp/progress.py & PROGRESS=$!
+trap 'log "FAILED at line $LINENO (exit $?)"' ERR
+
 command -v ffmpeg >/dev/null || { log "apt: ffmpeg"; apt-get update -qq && apt-get install -y -qq ffmpeg git curl >/dev/null; }
-command -v uv >/dev/null || { log "uv"; pip install -q uv; }
+# Ubuntu 24.04 images refuse a plain system pip install (PEP 668), so use the uv installer.
+export PATH="$HOME/.local/bin:$PATH"
+command -v uv >/dev/null || { log "uv"; curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null \
+  || pip install -q --break-system-packages uv; }
+command -v uv >/dev/null || { log "uv missing"; exit 1; }
+log "uv $(uv --version)"
 
 log "code"
 if [ -d "$W/mascotteAPI/.git" ]; then git -C "$W/mascotteAPI" pull -q; else git clone -q --depth=1 https://github.com/KhitanNL/mascotteAPI.git "$W/mascotteAPI"; fi
@@ -54,6 +75,7 @@ curl -sf http://127.0.0.1:7012/health >/dev/null || { log "face engine did not s
 log "face up after $(( $(date +%s) - T0 )) s"
 
 log "gateway on :7100"
+kill "$PROGRESS" 2>/dev/null || true; sleep 1
 cd "$W/mascotteAPI/worker/gateway"
 WORKER_HOST=0.0.0.0 GPU_CALLS="${GPU_CALLS:-5}" MAX_SLOTS="${MAX_SLOTS:-5}" WORKER_NAME="${WORKER_NAME:-runpod-5090}" \
   FACES_DIR=/nonexistent nohup "$W/venv-gw/bin/python" app.py > "$W/logs/gateway.log" 2>&1 &
