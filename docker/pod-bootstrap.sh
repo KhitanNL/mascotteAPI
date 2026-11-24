@@ -42,14 +42,20 @@ log "uv $(uv --version)"
 
 log "code"
 if [ -d "$W/mascotteAPI/.git" ]; then git -C "$W/mascotteAPI" pull -q; else git clone -q --depth=1 https://github.com/KhitanNL/mascotteAPI.git "$W/mascotteAPI"; fi
-[ -d "$W/SoulX-FlashHead/.git" ] || git clone -q --depth=1 https://github.com/Soul-AILab/SoulX-FlashHead.git "$W/SoulX-FlashHead"
-
-if [ ! -x "$W/venv-face/bin/python" ]; then
-  log "face venv (torch for RTX 50xx)"
+# Same FlashHead commit and package versions as the office engine (newer xfuser breaks on torch 2.7).
+FH_COMMIT=9bc03de06bb0de82cd6bc477804512ae06144bf2
+[ -d "$W/SoulX-FlashHead/.git" ] || git clone -q https://github.com/Soul-AILab/SoulX-FlashHead.git "$W/SoulX-FlashHead"
+git -C "$W/SoulX-FlashHead" checkout -q "$FH_COMMIT"
+PINS="$W/mascotteAPI/docker/face-constraints.txt"
+STAMP="$W/venv-face/.pins-$(md5sum "$PINS" | cut -c1-8)"
+if [ ! -f "$STAMP" ]; then
+  log "face venv (torch 2.7.1 cu128, office versions)"
+  rm -rf "$W/venv-face"
   uv venv -q -p 3.10 "$W/venv-face"
   uv pip install -q -p "$W/venv-face" torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
   grep -vE '^(xformers|nvidia-nccl-cu12|decord)' "$W/SoulX-FlashHead/requirements.txt" > /tmp/fh-req.txt
-  uv pip install -q -p "$W/venv-face" -r /tmp/fh-req.txt soundfile soxr fastapi uvicorn huggingface_hub
+  uv pip install -q -p "$W/venv-face" -c "$PINS" -r /tmp/fh-req.txt soundfile soxr fastapi uvicorn huggingface_hub
+  touch "$STAMP"
 fi
 if [ ! -x "$W/venv-gw/bin/python" ]; then
   log "gateway venv"
