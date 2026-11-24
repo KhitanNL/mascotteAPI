@@ -65,4 +65,6 @@ taken, so on demo day keep the pod running from 12:00 until the demo ends.
 - GPU, cloud, data center, $/h: RTX 4090, Secure, EUR-IS-2 (Iceland), $0.89/h (no 5090 under the cap at 10:07)
 - Pod create to ready: first try failed (old uv install step, then newer xfuser); after the fixes c6e62c0 and 0bd3d4f a restart was ready in ~5 min
 - Calls per cloud GPU without stutter: a 4 s answer renders in ~2.1 s (about 2x real time), one at a time on the GPU. Two avatars talking at the same moment keep up; a third waits. In normal conversation (avatar talks half the time) about 3 calls; 4+ will stutter when they talk together
-- Total cost: _
+- Total cost: pod ran 10:07 to 20:00 (about 9.9 h at $0.89/h, so about $8.80). RunPod billing at 20:00
+  showed $7.92 for the last 12 h; its records lag about 1 h, so the last hour was not in it yet.
+  Disconnected and deleted at 20:00 with no calls open on it.
