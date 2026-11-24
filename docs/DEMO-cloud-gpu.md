@@ -62,7 +62,7 @@ taken, so on demo day keep the pod running from 12:00 until the demo ends.
 
 ## Measured (fill in on 24 Nov)
 
-- GPU, cloud, data center, $/h: _
-- Pod create to ready: _
-- Calls per cloud GPU without stutter: _
+- GPU, cloud, data center, $/h: RTX 4090, Secure, EUR-IS-2 (Iceland), $0.89/h (no 5090 under the cap at 10:07)
+- Pod create to ready: first try failed (old uv install step, then newer xfuser); after the fixes c6e62c0 and 0bd3d4f a restart was ready in ~5 min
+- Calls per cloud GPU without stutter: a 4 s answer renders in ~2.1 s (about 2x real time), one at a time on the GPU. Two avatars talking at the same moment keep up; a third waits. In normal conversation (avatar talks half the time) about 3 calls; 4+ will stutter when they talk together
 - Total cost: _
